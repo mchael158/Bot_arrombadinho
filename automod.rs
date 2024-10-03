@@ -1,11 +1,14 @@
+use std::string;
+
+use chrono::{Utc};
 use serde::{Deserialize, Serialize};
 use serenity::model::id::{ChannelId, GuildId, RoleId, UserId};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use serenity::framework::standard::{CommandResult};
-use std::collections::HashMap;
-use serenity::all::Guild;
-use std::sync::{Arc, Mutex};
+use serenity::framework::standard::CommandResult;
+use tokio::time::Duration;
+use serenity::builder::EditMember;
+use tokio::time::sleep;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum EventType {
@@ -14,13 +17,19 @@ pub enum EventType {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Trigger {
-    ForbiddenWords(Vec<String>), //palavras proibidas 
+    ForbiddenWords(Vec<String>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Action {
-    MuteUser(UserId), //action de mutar o user
+    MuteUser(UserId),
+    WarnUser(UserId, String), 
+    TimeoutUser(UserId), 
 }
+
+// Constantes
+const MUTE_ROLE: u64 = ;
+const CHANNEL_BAGUNCA: u64 = ;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Rule {
@@ -37,81 +46,127 @@ pub struct Rule {
     pub exempt_channels: Vec<ChannelId>,
 }
 
-pub async fn apply_rule(ctx: &Context, msg: &Message, rule: &Rule) -> CommandResult {
-    if !rule.enabled {
-        return Ok(());
-    }
+pub async fn check_automod_rules(msg: &Message) -> Option<Rule> {
+    let forbidden_words = vec!["motivo:".to_string(), "cachorro".to_string()]; // Palavras proibidas
 
-    //canal isento de mute
-    if rule.exempt_channels.contains(&msg.channel_id) {
-        return Ok(());
-    }
+    // Cria a regra de automod
+    let rule = Rule {
+        id: 1,
+        guild_id: msg.guild_id.unwrap(),
+        name: String::from("palavras proibidas"),
+        creator_id: msg.author.id,
+        event_type: EventType::MessageSend,
+        trigger: Trigger::ForbiddenWords(forbidden_words.clone()),
+        actions: vec![
+            Action::MuteUser(msg.author.id),
+            Action::WarnUser(msg.author.id, "Você recebeu um warn".to_string()),
+            Action::TimeoutUser(msg.author.id),
+        ],
+        enabled: true,
+        exempt_roles: vec![],
+        exempt_channels: vec![],
+    };
 
-    //cargo isento de mute
-    if let Some(guild_id) = msg.guild_id {
-        let guild = match guild_id.to_guild_cached(&ctx.cache) {
-            Some(guild) => guild,
-            None => return Ok(()),
-        };
-
-        let member = match guild.member(&ctx.http, msg.author.id).await {
-            Ok(member) => member,
-            Err(_) => return Ok(()),
-        };
-        
-        for role_id in &member.roles {
-            if rule.exempt_roles.contains(role_id) {
-                return Ok(());
+    
+    if let Trigger::ForbiddenWords(words) = &rule.trigger {
+        for word in words {
+            if msg.content.contains(word) {
+                return Some(rule);
             }
         }
     }
 
-    //garilho
-    match &rule.trigger {
-        Trigger::ForbiddenWords(words) => {
-            for word in words {
-                if msg.content.contains(word) {
-                    //ação: mutar o usuário
-                    for action in &rule.actions {
-                        match action {
-                            Action::MuteUser(user_id) => {
-                                //role de mute no usuário
-                                let mute_role_id = RoleId::new(1161729073278636154); //id role mute
-                                if let Some(guild_id) = msg.guild_id {
-                                    if let Ok(mut member) = guild_id.member(&ctx.http, *user_id).await {
-                                        if let Err(why) = member.add_role(&ctx.http, mute_role_id).await {
-                                            println!("não deu pra mutar o mamaco: {:?}", why);
-                                        } else {
-                                            msg.channel_id.say(&ctx.http, format!("você {} foi mutado por ser um filha da puta, kita do serve", msg.author.id)).await.unwrap();
-                                        }
+    None
+}
+
+// Função do automod
+pub async fn execute_automod_actions(ctx: Context, msg: Message, rule: Rule) -> CommandResult {
+    for action in &rule.actions {
+        match action {
+            Action::TimeoutUser(user_id) => {
+                if let Some(guild_id) = msg.guild_id {
+                    let timeout_duration = Duration::from_secs(3600);
+                    let timeout_until = Utc::now() + chrono::Duration::from_std(timeout_duration).unwrap();
+                    let timeout_until_timestamp = Timestamp::from_unix_timestamp(timeout_until.timestamp()).unwrap();
+
+      
+                    let edit_member = EditMember::default();
+                    let _ = edit_member.clone().disable_communication_until(timeout_until_timestamp.to_string());
+
+                    if let Err(why) = guild_id.edit_member(&ctx.http, *user_id, edit_member).await {
+                        println!("Erro ao aplicar o timeout: {:?}", why);
+                    } else {
+                        let user_mention_arroba = format!("<@{}>", user_id);
+                        let chanel_id_bagunca = ChannelId::new(CHANNEL_BAGUNCA);
+                        let timeout_message = format!("{}.", user_mention_arroba);
+                        chanel_id_bagunca.say(&ctx.http, timeout_message).await.unwrap();
+
+                        let ctx_clone = ctx.clone();
+                        let user_id_clone = *user_id;
+
+                        tokio::spawn(async move {
+                            tokio::time::sleep(timeout_duration).await;
+
+                            //olha se o membro existe
+                            if let Ok(_member) = guild_id.member(&ctx_clone.http, user_id_clone).await {
+                                //informa que o usuario foi desmutado
+                                let _ = chanel_id_bagunca.say(&ctx_clone.http, format!("{} você foi removido do mute.", user_mention_arroba)).await;
+                            }
+                        });
+                    }
+                }
+            },
+
+            Action::WarnUser(user_id, warning_message) => {
+                let chanel_id_bagunca = ChannelId::new(CHANNEL_BAGUNCA);
+                let user_mention_arroba = format!("<@{}>", user_id);
+                if let Some(_guild_id) = msg.guild_id {
+                    if let Err(why) = chanel_id_bagunca.say(&ctx.http, format!("{}: {}", user_mention_arroba, warning_message)).await {
+                        println!("Erro ao enviar aviso ao usuário: {:?}", why);
+                    }
+                }
+            },
+            Action::MuteUser(user_id) => {
+                let mute_role_id = RoleId::new(MUTE_ROLE); // ID do cargo de mute
+                if let Some(guild_id) = msg.guild_id {
+                    if let Ok(member) = guild_id.member(&ctx.http, *user_id).await {
+                        if let Err(why) = member.add_role(&ctx.http, mute_role_id).await {
+                            println!("Erro ao mutar o usuário: {:?}", why);
+                        } else {
+                            let user_mention_arroba = format!("<@{}>", user_id);
+                            let mute_time_secs = 60;
+                            let mute_time = Duration::from_secs(mute_time_secs);
+            
+                            let mute_time_in_minutes = mute_time_secs / 60;
+                            let mute_message = if mute_time_in_minutes >= 60 {
+                                let mute_in_hours = mute_time_in_minutes / 60;
+                                format!("{} você foi mutado por {} horas.", user_mention_arroba, mute_in_hours)
+                            } else {
+                                format!("{} você foi mutado por {} minutos.", user_mention_arroba, mute_time_in_minutes)
+                            };
+            
+                            let chanel_id_bagunca = ChannelId::new(CHANNEL_BAGUNCA);
+                            chanel_id_bagunca.say(&ctx.http, mute_message).await.unwrap();
+            
+                            let ctx_clone = ctx.clone();
+                            let user_id_clone = *user_id;
+                            tokio::spawn(async move {
+                                sleep(mute_time);
+                                if let Ok(_) = guild_id.member(&ctx_clone.http, user_id_clone).await {
+                                    if let Err(err) = member.remove_role(&ctx_clone.http, mute_role_id).await {
+                                        println!("Não foi possível remover o mute do usuário: {:?}", err);
+                                    } else {
+                                        let _ = chanel_id_bagunca.say(&ctx_clone.http, format!("Usuário {} foi desmutado.", user_mention_arroba)).await;
                                     }
                                 }
-                            }
+                            });
                         }
                     }
                 }
-            }
+            },
+
+            
         }
     }
-
     Ok(())
 }
-
-#[tokio::main]
-pub async fn main() {
-    let rule = Rule {
-        id: 1,
-        guild_id: GuildId::new(123456789), //id do serve lixo
-        name: String::from("Mute por palavras proibidas"),
-        creator_id: UserId::new(987654321),//caso queira por id do criador da rule
-        event_type: EventType::MessageSend,
-        trigger: Trigger::ForbiddenWords(vec!["motivo:".to_string(), "insulto".to_string()]),
-        actions: vec![Action::MuteUser(UserId::new(123456789))], //action de mutar o user
-        enabled: true,
-        exempt_roles: vec![RoleId::new(987654321)], //cargo imune
-        exempt_channels: vec![ChannelId::new(111111111)], //canal sem mute
-    };
-
-    let handler = Handler {
-        rule: rule.clone(), 
-    };
