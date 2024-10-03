@@ -13,7 +13,7 @@ use crate::constantes::{GUILD_i_ID, CHANNEL_BAGUNCA};
 
 use crate::embediss;
 
-const CHANNEL_LOGS_ID: u64 = 1159998830239027272;
+const CHANNEL_LOGS_ID: u64 = ;
 
 pub async fn ban_user(
     ctx: &Context,             //referência
